@@ -6,12 +6,13 @@
 *   [x] **TTS:** Validate `mlx-audio` with the `Kokoro-82M` model.
 *   [x] **Methodology:** Establish the R&D Framework (Whitepaper, Roadmap, Journal, README).
 
-### 🔲 **Phase 1: The Linear "Dumb Pipe" (Current Phase)**
-*   [ ] **Audio I/O:** Implement basic microphone recording and speaker playback functionality.
-*   [ ] **Pipeline Script (`pipeline_v1.py`):** Create the main script to orchestrate the synchronous flow.
-*   [ ] **STT Integration:** Connect audio input to the `mlx-whisper` transcription function.
-*   [ ] **LLM Integration:** Connect the STT text output to the `llama.cpp` inference function.
-*   [ ] **TTS Integration:** Connect the LLM text output to the `mlx-audio` synthesis function.
-*   [ ] **End-to-End Test:** Run the full pipeline, speak a sentence, and hear a response.
-*   [ ] **Journal Entry:** Document the baseline performance (total latency) and key challenges of the synchronous pipeline.
+### ✅ **Phase 1: The Linear "Dumb Pipe" (Completed)**
+*   [x] All tasks complete.
+*   [x] **Outcome:** Established a baseline "dead air" latency of **~6 seconds**. Proved the synchronous model is not viable for real-time conversation.
 
+### 🔲 **Phase 2: Introducing Asynchrony and Streaming (Current Phase)**
+*   [ ] **Task 2.1: Refactor to a Persistent Server Architecture.** Convert `pipeline_v1.py` into a long-running application where models are loaded only once at startup.
+*   [ ] **Task 2.2: Implement LLM Token Streaming.** Modify the `LLMEngine` to `yield` tokens as they are generated, rather than returning the full response at the end.
+*   [ ] **Task 2.3: Implement "First-Chunk" TTS.** Modify the `TextToSpeechEngine` to accept a stream of text. It will buffer text until it forms a complete sentence, synthesize that chunk of audio, and immediately send it for playback.
+*   [ ] **Task 2.4: The Asynchronous Orchestrator.** Replace the linear `if __name__ == "__main__"` block with an `asyncio` event loop. Use `asyncio.Queue` to create non-blocking pipes between the STT, LLM, and TTS components.
+*   [ ] **Task 2.5: Implement Streaming Audio I/O.** (The `PyAudio` task). Refactor the `AudioRecorder` to process audio in small chunks and implement a basic VAD (Voice Activity Detection) to detect the end of speech.
