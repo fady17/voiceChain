@@ -1,3 +1,12 @@
+**
+    *   **Phase 0: Component Sanity Check (Completed)**
+    *   **Phase 1: The Linear "Dumb Pipe" (Current)**
+    *   **Phase 2: Introducing Asynchrony and Streaming**
+    *   **Phase 3: The Intelligent Orchestrator & State Management**
+    *   **Phase 4: Advanced Metadata & Prosody Control**
+    *   **Phase 5: Adaptation & Fine-Tuning**
+
+
 ## **Project Roadmap & Checklist**
 
 ### ✅ **Phase 0: Component Sanity Check**
