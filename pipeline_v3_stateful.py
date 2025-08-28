@@ -1,4 +1,6 @@
+#pipeline_v3_stateful.py
 import asyncio
+import threading
 import sys
 import time
 import sounddevice as sd
@@ -6,9 +8,11 @@ import numpy as np
 from scipy.io.wavfile import write , read
 # from llama_cpp import Llama
 import mlx_whisper
-
+from enum import Enum, auto
 from loguru import logger
 from mlx_audio.tts.generate import generate_audio
+from pynput import keyboard
+import queue 
 # --- 1.0: CONFIGURE OBSERVABILITY ---
 # Remove the default handler to prevent duplicate outputs
 logger.remove()
@@ -34,40 +38,48 @@ logger.add(
 logger.info("Logger configured. Starting the Traceable Pipe v1.")
 
 class AudioRecorder:
-    def __init__(self, sample_rate=16000, duration=5):
+    def __init__(self, sample_rate=16000):
         self.sample_rate = sample_rate
-        self.duration = duration
-        logger.info(f"AudioRecorder initialized with {self.sample_rate} Hz sample rate and {self.duration}s duration.")
+        self.stream = None
+        self.audio_queue = queue.Queue() # A thread-safe queue to pass audio chunks
 
-    def record_audio(self, output_filename="temp_recording.wav"):
-        """
-        Records audio from the default microphone for a fixed duration.
-        """
-        logger.info(f"Starting {self.duration}-second audio recording...")
+    def _audio_callback(self, indata, frames, time, status):
+        """This is called by the sounddevice stream for each new audio chunk."""
+        self.audio_queue.put(indata.copy())
+
+    def start_recording(self):
+        """Starts the non-blocking audio stream."""
+        if self.stream is not None:
+            self.stop_recording() # Ensure any old stream is closed
+
+        logger.info("Starting audio stream...")
+        self.stream = sd.InputStream(
+            samplerate=self.sample_rate,
+            channels=1,
+            dtype='float32',
+            callback=self._audio_callback
+        )
+        self.stream.start()
+
+    def stop_recording(self) -> np.ndarray:
+        """Stops the stream and returns the full recorded audio."""
+        if self.stream is None:
+            return np.array([], dtype=np.float32)
+
+        logger.info("Stopping audio stream...")
+        self.stream.stop()
+        self.stream.close()
+        self.stream = None
+
+        # Drain the queue and concatenate all chunks
+        audio_chunks = []
+        while not self.audio_queue.empty():
+            audio_chunks.append(self.audio_queue.get())
         
-        # --- TRACEPOINT START ---
-        start_time = time.time()
-        
-        # The actual recording command. It's a blocking call.
-        recording_data = sd.rec(int(self.duration * self.sample_rate), samplerate=self.sample_rate, channels=1, dtype='float32')
-        sd.wait() # Wait until recording is finished
-
-        # --- TRACEPOINT END ---
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        
-        logger.success(f"Recording complete. Actual time elapsed: {elapsed_time:.2f}s.")
-        logger.debug(f"Recording data shape: {recording_data.shape}, dtype: {recording_data.dtype}")
-
-        # Save the recording to a file for debugging and for the STT engine
-        try:
-            write(output_filename, self.sample_rate, recording_data)
-            logger.info(f"Recording saved to '{output_filename}'.")
-        except Exception as e:
-            logger.error(f"Failed to save recording: {e}")
-            return None, None
-
-        return recording_data, self.sample_rate
+        if not audio_chunks:
+            return np.array([], dtype=np.float32)
+            
+        return np.concatenate(audio_chunks, axis=0)
 
 
 # --- 1.2: SPEECH-TO-TEXT SUB-SYSTEM ---
@@ -289,41 +301,92 @@ class AudioPlayer:
                     logger.error(f"Error writing to audio stream: {e}")
 
 
-# --- THE MAIN AGENT CLASS ---
+
+# --- STATES AND EVENTS ---
+class AgentState(Enum):
+    IDLE = auto()
+    LISTENING = auto()
+    PROCESSING = auto()
+    SPEAKING = auto()
+
+class UserEvent(Enum):
+    PUSH_TO_TALK_START = auto()
+    PUSH_TO_TALK_STOP = auto()
+
+# --- THE FINAL STATEFUL VOICE AGENT ---
 class VoiceAgent:
     def __init__(self):
-        logger.info("Initializing Voice Agent...")
+        # State Machine Core
+        self.state = AgentState.IDLE
+        self.event_queue = asyncio.Queue()
+        self.processing_task = None # To keep track of the running pipeline task
         
-        # --- 1. LOAD ALL MODELS AT STARTUP ---
-        # This is the core of our persistent architecture.
+        # Load Models & Initialize Sub-systems
         self.llm_instance = self._load_llm()
-        
-        # --- 2. INITIALIZE ALL SUB-SYSTEMS ---
-        # We pass the pre-loaded models to our engine classes.
-        self.recorder = AudioRecorder(duration=4)
+        self.recorder = AudioRecorder()
         self.transcriber = Transcriber()
-        self.llm_engine = LLMEngine(self.llm_instance) # type: ignore
+        self.llm_engine = LLMEngine(self.llm_instance)
         self.tts_engine = TextToSpeechEngine()
         self.player = AudioPlayer()
-        
-        logger.success("Voice Agent initialized successfully. All models loaded.")
+        logger.info(f"Voice Agent initialized. Initial state: {self.state.name}")
 
-    def _load_llm(self):
-        # This private method centralizes the heavy LLM loading.
-        logger.info("Loading LLM... (This may take a moment)")
+    async def transition_to(self, new_state: AgentState):
+        logger.info(f"State transition: {self.state.name} -> {new_state.name}")
+        self.state = new_state
+    
+    # --- The Core Pipeline Logic ---
+    async def run_pipeline(self, audio_data: np.ndarray):
+        """This is the full, self-contained pipeline task."""
+        loop = asyncio.get_running_loop()
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+
         try:
-            from llama_cpp import Llama
-            llm = Llama(
-                model_path="./models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-                n_gpu_layers=-1,
-                n_ctx=32768,
-                verbose=False
+            # 1. Save and Transcribe
+            recording_file = f"temp_recording_{timestamp}.wav"
+            await loop.run_in_executor(
+                None, lambda: write(recording_file, self.recorder.sample_rate, audio_data)
             )
-            logger.success("LLM loaded into memory.")
-            return llm
+            transcribed_text = await loop.run_in_executor(
+                None, self.transcriber.transcribe_audio, recording_file
+            )
+            if not transcribed_text:
+                raise ValueError("Transcription failed or produced no text.")
+            
+            # Set state to SPEAKING. From this point, the agent is considered "responding".
+            await self.transition_to(AgentState.SPEAKING)
+
+            # 2. Setup async queues for the streaming pipeline
+            text_token_queue = asyncio.Queue()
+            tts_sentence_queue = asyncio.Queue()
+            
+            # 3. Create and run all concurrent data-processing tasks
+            llm_task = asyncio.create_task(
+                self.llm_engine.generate_response(transcribed_text, text_token_queue)
+            )
+            chunker_task = asyncio.create_task(
+                self.text_chunker(text_token_queue, tts_sentence_queue)
+            )
+            tts_task = asyncio.create_task(
+                self.tts_consumer(tts_sentence_queue, timestamp)
+            )
+            
+            # Wait for the data processing to finish. Playback happens in the background.
+            await asyncio.gather(llm_task, chunker_task, tts_task)
+            
+            # 4. Wait for the audio player to finish its queue
+            logger.info("Data processing complete. Waiting for playback to finish...")
+            while not self.player._playback_queue.empty():
+                await asyncio.sleep(0.1)
+            # Add a small buffer to ensure the last chunk has started playing
+            await asyncio.sleep(0.5)
+
         except Exception as e:
-            logger.critical(f"CRITICAL: Failed to load LLM. Agent cannot start. Error: {e}")
-            return None
+            logger.error(f"Error in processing pipeline: {e}")
+        
+        finally:
+            # Once everything is done, spoken or failed, return to IDLE
+            await self.transition_to(AgentState.IDLE)
+            logger.info("Pipeline complete. Returning to IDLE. Hold SPACE to talk.")
 
     # The tts_consumer now just adds to the player's queue
     async def tts_consumer(self, tts_queue: asyncio.Queue, timestamp: str):
@@ -356,7 +419,50 @@ class VoiceAgent:
             if any(term in token for term in sentence_terminators):
                 await tts_queue.put(sentence_buffer.strip())
                 sentence_buffer = ""
+    # --- The Main Agent Event Loop ---
+    async def run(self):
+        """The main event loop that drives the state machine."""
+        self.player.start() # Start the player as a permanent background service
+        logger.info("Agent run loop started. Hold SPACE to talk.")
 
+        while True:
+            event = await self.event_queue.get()
+            logger.debug(f"Event: {event.name} in State: {self.state.name}")
+
+            if self.state == AgentState.IDLE:
+                if event == UserEvent.PUSH_TO_TALK_START:
+                    await self.transition_to(AgentState.LISTENING)
+                    self.recorder.start_recording()
+
+            elif self.state == AgentState.LISTENING:
+                if event == UserEvent.PUSH_TO_TALK_STOP:
+                    audio_data = self.recorder.stop_recording()
+                    if audio_data.size < 16000: # Less than 1 second of audio
+                        logger.warning("Recording too short. Returning to IDLE.")
+                        await self.transition_to(AgentState.IDLE)
+                        continue
+                    
+                    await self.transition_to(AgentState.PROCESSING)
+                    # Start the entire pipeline as a single, non-blocking background task
+                    self.processing_task = asyncio.create_task(self.run_pipeline(audio_data))
+
+    def _load_llm(self):
+        # This private method centralizes the heavy LLM loading.
+        logger.info("Loading LLM... (This may take a moment)")
+        try:
+            from llama_cpp import Llama
+            llm = Llama(
+                model_path="./models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+                n_gpu_layers=-1,
+                n_ctx=32768,
+                verbose=False
+            )
+            logger.success("LLM loaded into memory.")
+            return llm
+        except Exception as e:
+            logger.critical(f"CRITICAL: Failed to load LLM. Agent cannot start. Error: {e}")
+            return None
+            
      # --- FIX 2: A dedicated method to start background services ---
     async def start_services(self):
         """Starts all long-running background tasks."""
@@ -405,37 +511,54 @@ class VoiceAgent:
         # Note: Playback may still be ongoing in the background.
 
 
+# --- KEYBOARD LISTENER SETUP ---
+class KeyboardListener:
+    def __init__(self, event_queue: asyncio.Queue, loop: asyncio.AbstractEventLoop):
+        self.event_queue = event_queue
+        self.loop = loop
+        self.listener_thread = None
+        self.is_space_pressed = False
 
-# --- MAIN EXECUTION BLOCK (The Orchestrator) ---
+    def on_press(self, key):
+        if key == keyboard.Key.space and not self.is_space_pressed:
+            self.is_space_pressed = True
+            # Use call_soon_threadsafe to safely interact with the asyncio loop
+            self.loop.call_soon_threadsafe(
+                self.event_queue.put_nowait, UserEvent.PUSH_TO_TALK_START
+            )
+
+    def on_release(self, key):
+        if key == keyboard.Key.space:
+            self.is_space_pressed = False
+            self.loop.call_soon_threadsafe(
+                self.event_queue.put_nowait, UserEvent.PUSH_TO_TALK_STOP
+            )
+            
+    def start(self):
+        # The pynput listener runs in its own thread
+        listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
+        self.listener_thread = threading.Thread(target=listener.run, daemon=True)
+        self.listener_thread.start()
+        logger.info("Keyboard listener started in a background thread.")
+
+
+
+# --- MAIN EXECUTION BLOCK ---
 async def main():
     agent = VoiceAgent()
     
-    # Start background services ONCE
-    await agent.start_services()
+    # Get the current asyncio event loop
+    main_loop = asyncio.get_running_loop()
     
-    try:
-        for i in range(2):
-            logger.info(f"\n--- Triggering Conversation Turn {i+1} ---")
-            input("Press Enter to start recording...")
-            await agent.start_conversation_turn()
-            
-            # --- FIX 5: Explicitly wait for playback to finish before looping ---
-            # This ensures one conversation is fully "spoken" before the next begins.
-            logger.info("Waiting for audio playback to complete...")
-            while not agent.player._playback_queue.empty() or agent.player._is_playing.is_set():
-                await asyncio.sleep(0.1)
-            await asyncio.sleep(0.5) 
-            logger.success("Playback queue empty. Ready for next turn.")
-
-
-    finally:
-        # Stop background services ONCE at the very end
-        logger.info("Shutting down agent services...")
-        await agent.stop_services()
-        logger.success("Agent shutdown complete.")
+    # Create and start the keyboard listener, passing it the agent's queue and the loop
+    k_listener = KeyboardListener(agent.event_queue, main_loop)
+    k_listener.start()
+    
+    # Run the agent's main loop
+    await agent.run()
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received. Shutting down.")
+        logger.info("Shutdown requested.")

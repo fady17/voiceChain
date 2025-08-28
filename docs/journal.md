@@ -1,3 +1,38 @@
+**Entry: 2024-05-28**
+**Topic:** Phase 3A Completion: Stateful Agent with Push-to-Talk and Streaming Pipeline
+**Status:** Completed
+
+**1. Context:**
+The objective of Phase 3A was to refactor the agent into a robust, event-driven state machine. This involved replacing the simple "run once" script with a persistent agent that uses a "hold-to-talk" keyboard trigger to manage its `IDLE`, `LISTENING`, `PROCESSING`, and `SPEAKING` states. This was done to perfect the software logic of turn-taking and streaming before introducing the complexities of a live VAD.
+
+**2. Execution & Key Findings:**
+
+*   **State Machine is Fully Functional:** The logs clearly trace the agent's lifecycle as intended:
+    1.  Starts in `IDLE`.
+    2.  `14:41:11.718`: Spacebar press triggers transition to `LISTENING`. `start_recording` is called.
+    3.  `14:41:16.012`: Spacebar release triggers `stop_recording`.
+    4.  `14:41:16.129`: Transition to `PROCESSING`. The `run_pipeline` task is launched in the background.
+    5.  `14:41:17.982`: After STT is complete, the state transitions to `SPEAKING` just as the LLM/TTS stream begins.
+    6.  `14:41:48.841`: After all data processing and playback is complete, the `finally` block in `run_pipeline` transitions the state back to `IDLE`.
+    *   **Conclusion:** The state machine is correctly orchestrating the agent's behavior based on the software-simulated user events.
+
+*   **Streaming Pipeline is Correctly Integrated:** The parallel execution is flawless.
+    *   The `synthesize_speech` calls for later chunks are happening *while* the `_playback_loop` is busy playing earlier chunks. For example, playback of the first chunk (`...00.wav`) starts at `14:41:22.621` and finishes at `14:41:31.394`. During this ~9 second window, *all four other TTS chunks* are successfully synthesized.
+    *   **Conclusion:** The core architecture of using `asyncio.create_task` for the main pipeline and a dedicated, queue-based `AudioPlayer` service is validated as a robust and highly effective pattern for achieving low perceived latency.
+
+*   **"Time to First Sound" (TTFS) Analysis:**
+    *   User stops speaking (key release): `14:41:16.012`
+    *   First audio chunk playback begins: `14:41:22.621`
+    *   **"Dead Air" Before First Sound:** `22.621 - 16.012 = **6.61 seconds**`
+    *   **Breakdown:** `STT (1.85s) + LLM-to-first-sentence (~0.5s) + TTS-for-first-chunk (~4.2s)`
+    *   **TTS Latency Anomaly Revisited:** The first TTS chunk takes a long time (`14:41:22.621 - 14:41:17.982 = 4.64s`), while the second takes only `1.23s`. This confirms that even with the simplified `generate_audio` function, there is a significant "cold start" penalty on the first call within a turn. We have consciously accepted this for now, but it remains a key target for future optimization.
+
+**3. Conclusion & Path Forward:**
+Phase 3A is a complete success. We have built the "brain" and "central nervous system" of our agent. It has a robust state machine, understands the concept of a conversational turn, and can execute its complex, parallel streaming pipeline based on discrete user events. We have successfully separated the software architecture from the audio hardware challenges.
+
+The only remaining task for the core real-time architecture is to replace the keyboard listener—our "perfect VAD simulator"—with a real one. We are now fully prepared to tackle the final and most challenging part of the real-time interaction puzzle.
+
+---
 **Entry: 2024-05-23**
 **Topic:** Investigating "First-Chunk Lag" in Asynchronous Audio Playback
 **Status:** Completed
