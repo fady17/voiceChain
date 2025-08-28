@@ -71,6 +71,24 @@
         *   `LISTENING` -> `SPEECH_ENDED` event -> `PROCESSING`.
         *   `SPEAKING` -> `SPEECH_STARTED` event -> `BARGE_IN` -> `LISTENING`.
 
+
+### **Phase 3C: Barge-In Interruption and Echo Cancellation**
+
+This is the final step to make the conversation feel truly natural.
+
+**The Plan:**
+
+1.  **Track Agent's Speech:** The `VoiceAgent` needs to know what it is currently saying. When the `tts_consumer` synthesizes a sentence, we will store that sentence in a new state variable, e.g., `self.currently_speaking_text`.
+
+2.  **Implement Software Echo Cancellation (`is_echo`):** We will create a new method `is_echo(self, user_text: str) -> bool`. This method will compare the incoming `user_text` (from the STT) with `self.currently_speaking_text`.
+    *   A simple, robust first version can use a normalized string similarity metric. For example, convert both strings to lowercase, remove punctuation, and check if one is a substring of the other or if their Levenshtein distance is very small.
+
+3.  **Implement the Interruption Handler (`handle_barge_in`):** This is the core logic. When an utterance is detected during the `SPEAKING` state and our `is_echo` function returns `False`, we trigger the interruption.
+    *   **Action 1: Silence the Agent.** Immediately call a new `self.player.interrupt()` method. This method needs to clear the player's queue and stop the current playback instantly.
+    *   **Action 2: Cancel the Cognitive Pipeline.** The current `run_pipeline` task must be cancelled. We can get a handle to it (e.g., `self.processing_task`) and call `self.processing_task.cancel()`. This will stop the LLM and TTS from generating any more of the old response.
+    *   **Action 3: Start the New Turn.** Immediately start a *new* `run_pipeline` task with the new, interrupting user text.
+
+
 *   **Task 3B.4: The Acoustic Echo Problem (Now a Manageable Task).**
     *   **Action:** At this point, the system will work perfectly *with a headset*. Without one, it will hear itself and barge-in constantly. NOW we can tackle this.
     *   **Solutions (to be explored):**

@@ -36,7 +36,7 @@ logger.add(
     catch=True # Catches exceptions to prevent crashes in logging
 )
 
-logger.info("Logger configured. Starting the Traceable Pipe v1.")
+logger.info("Logger configured. Starting the Traceable Pipe v2.")
 
 class AudioRecorder:
     def __init__(self, sample_rate=16000, duration=5):

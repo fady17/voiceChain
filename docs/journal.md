@@ -1,4 +1,41 @@
 **Entry: 2024-05-28**
+**Topic:** Phase 3B Completion: Hands-Free VAD and Barge-In Detection
+**Status:** Completed
+
+**1. Context:**
+The objective of Phase 3B was to replace the keyboard-based triggers with a real-time, continuous audio pipeline driven by a two-stage VAD system. This would make the agent truly hands-free and enable the detection of user interruptions (barge-in).
+
+**2. Execution & Key Findings:**
+
+*   **Hands-Free Activation is a Success:**
+    *   `19:35:45.197`: The VAD pipeline correctly detects a user utterance while the agent is `IDLE`.
+    *   `19:35:45.277`: The utterance is passed to the `VoiceAgent.run` loop, which correctly transitions the state to `PROCESSING` and launches the `run_pipeline` task.
+    *   **Conclusion:** The `AudioStreamer` -> `VADProcessor` -> `user_utterance_queue` chain is fully functional and correctly drives the agent's main loop.
+
+*   **Barge-In Detection is a Success:**
+    *   `19:35:47.139`: The agent transitions to the `SPEAKING` state.
+    *   `19:35:48.593`: While the agent is speaking, the VAD pipeline successfully detects a *new* user utterance.
+    *   The `VoiceAgent.run` loop correctly enters the barge-in block: `INFO | __main__:run:553 - User speech detected while agent is speaking (potential barge-in).`
+    *   This happens repeatedly, proving the system is continuously listening even while speaking.
+    *   **Conclusion:** We have successfully built the sensory mechanism for barge-in. The agent is *aware* that the user is trying to interrupt.
+
+*   **Acoustic Echo is Present (As Predicted):**
+    *   The repeated "potential barge-in" logs are almost certainly the agent hearing its own voice played back through the speakers.
+    *   The fact that the system *detects* this is a success. It proves our architecture is working. The next step is to make it *act* on this information intelligently.
+
+*   **Shutdown Errors Persist:** The `RuntimeError: Event loop is closed` on shutdown is still present. This is a low-priority issue related to the hard exit of the `pyaudio` thread, which we can polish later.
+
+**3. Architectural Analysis & Path to Phase 4:**
+We have successfully completed the entire real-time input pipeline. We have a stateful, asynchronous, streaming agent that can listen for and respond to a user hands-free.
+
+The log `User speech detected while agent is speaking (potential barge-in)` is the final gate. We have built the doorbell; now we need to write the code that answers the door.
+
+The final task of Phase 3 is to implement the logic inside that `if` block: **Task 3C: Barge-In Interruption and Echo Cancellation.**
+
+---
+
+
+**Entry: 2024-05-28**
 **Topic:** Phase 3A Completion: Stateful Agent with Push-to-Talk and Streaming Pipeline
 **Status:** Completed
 
