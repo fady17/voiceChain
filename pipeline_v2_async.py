@@ -1,6 +1,3 @@
-
-# pipeline_v1.py
-
 import asyncio
 import sys
 import time
