@@ -96,6 +96,27 @@ This is the final step to make the conversation feel truly natural.
         2.  **"Duck" and Mute:** A simpler approach. When the agent is `SPEAKING`, we can programmatically mute the microphone input or instruct the VAD to ignore any detected speech. This is less elegant but highly effective.
 
 
+The Path Forward: Phase 4 - The Production-Grade Refactor
+This architectural review gives us a crystal-clear roadmap for our next phase. We will stop adding new features and focus on hardening and optimizing the incredible system we've already built.
+Phase 4 Checklist:
+
+Task 4.1: In-Memory Audio Streaming.
+Action: Refactor the tts_consumer and AudioPlayer to pass audio data as in-memory NumPy arrays, completely eliminating the TTS .wav file I/O. (This should be our very next task).
+
+Task 4.2: Atomic State Transitions.
+Action: Introduce an asyncio.Lock to the ConversationManager and protect all self.state modifications.
+
+Task 4.3: Robust Error Handling.
+Action: Implement more granular error handling within the run_pipeline method with specific verbal error messages.
+
+Task 4.4: Resource Cleanup.
+Action: If we stick with any file I/O, ensure temporary files are deleted. Implement robust signal handling for graceful shutdown.
+
+Task 4.5 (Research Spike): Single VAD System.
+Action: Create a branch to experiment with removing WebRTCVAD and using only Silero. Measure CPU impact and determine if the simplification is worth it.
+
+Task 4.6 (Research Spike): Advanced Barge-In.
+Action: Brainstorm and prototype a more advanced is_echo function, potentially using acoustic features.
 
 ### TODO:
 
