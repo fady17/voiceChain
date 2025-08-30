@@ -11,3 +11,4 @@ wheels/
 models/
 agents
 logs
+docs/logs.md
